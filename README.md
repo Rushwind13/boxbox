@@ -34,6 +34,11 @@ See `requirements.txt` for dependencies.
     pip3 install --upgrade pip
     pip3 install -r requirements.txt
 
+## Linting & Pre-Commit Hook
+We use [pre-commit](https://pre-commit.com/) to enforce linting before every commit.
+- Setup: `pip install pre-commit && pre-commit install`
+- Now all `git commit`s will run `flake8` and block if not clean.
+
 ## How to Use:
 Set environment variables for ENV (dev or prod), ALLOWED_ORIGINS, and JWT_SECRET.
 
