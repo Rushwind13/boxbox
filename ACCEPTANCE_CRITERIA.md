@@ -46,6 +46,7 @@ This document tracks all current and upcoming requirements for the FastAPI RESTf
 
 ## 🟡 Upcoming / Next Priorities
 
+- [ ] **CI** Extract all magic configuration into base values and per-env value overrides files, with overrides minimized
 - [ ] **Deployment Automation:** AWS Lambda, ECS, EKS, or EC2. Add sample IaC (Terraform, CloudFormation)
 - [ ] **Production Auth:** Replace `/token` with real login (username/password), user DB, or SSO/OAuth2
 - [ ] **Claims-Based or User-Based Rate Limiting:** Optionally limit by JWT claims (user) not just IP
