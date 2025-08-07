@@ -3,7 +3,8 @@ from fastapi import FastAPI, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from pydantic import BaseModel, ValidationError
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel
 import logging
 import uvicorn
 import sys
@@ -75,18 +76,21 @@ class ErrorResponse(BaseModel):
     request_id: str = ""
 
 # --- Global error handlers ---
-@app.exception_handler(ValidationError)
-@app.exception_handler(422)
-async def validation_exception_handler(request: Request, exc):
+
+# Handles FastAPI validation errors (missing fields, bad JSON, etc)
+from fastapi.exceptions import RequestValidationError
+
+@app.exception_handler(RequestValidationError)
+async def fastapi_request_validation_exception_handler(request: Request, exc):
     request_id = str(uuid.uuid4())
-    logger.warning(f"Validation error: {exc} | request_id={request_id}")
+    logger.warning(f"FastAPI request validation error: {exc} | request_id={request_id}")
     return JSONResponse(
         status_code=422,
         content=ErrorResponse(
-            error="Validation failed: " + str(exc.errors() if hasattr(exc, "errors") else str(exc)),
+            error="Validation failed: " + str(exc.errors()),
             code=422,
             request_id=request_id
-        ).dict()
+        ).model_dump()
     )
 
 @app.exception_handler(Exception)
@@ -100,13 +104,13 @@ async def global_exception_handler(request: Request, exc: Exception):
             error="Internal server error.",
             code=500,
             request_id=request_id
-        ).dict()
+        ).model_dump()
     )
 
 # --- POST endpoint (/process) ---
 @app.post("/process", response_model=ResponseSchema, responses={422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def process(request: RequestSchema):
-    logger.info(f"Received request: {request.json()}")
+    logger.info(f"Received request: {request.model_dump_json()}")
     # TODO: Core logic goes here
     output = f"Echo: {request.input_data}"
     return ResponseSchema(result=output)
