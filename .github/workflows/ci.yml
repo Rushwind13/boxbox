@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 mypy pytest-cov codecov
+
+      - name: Lint with flake8
+        run: |
+          source venv/bin/activate
+          flake8 src tests --max-line-length=100 --exclude=venv
+
+      - name: Type check with mypy
+        run: |
+          source venv/bin/activate
+          mypy src
+
+      - name: Run tests with coverage
+        run: |
+          source venv/bin/activate
+          pytest --cov=src --cov-report=xml --disable-warnings
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+
+      - name: Docker build and test
+        run: |
+          docker build -t processor .
+          # Optional: docker run tests if you have a test target in Dockerfile
+
+      # - name: Deploy to AWS (placeholder)
+      #   run: |
+      #     echo "Add AWS CLI/CDK/CloudFormation deploy script here"
