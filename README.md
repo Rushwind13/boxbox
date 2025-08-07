@@ -34,6 +34,13 @@ See `requirements.txt` for dependencies.
     pip3 install --upgrade pip
     pip3 install -r requirements.txt
 
+## How to Use:
+Set environment variables for ENV (dev or prod), ALLOWED_ORIGINS, and JWT_SECRET.
+
+In production, /docs, /openapi.json will be hidden, CORS will allow only listed origins, and JWT will be required for /process.
+
+Obtain a JWT with a POST to /token, then use it as a Bearer token in Authorization header for /process.
+
 ## Run API Server
     ```bash
     uvicorn src.main:app --reload
@@ -41,6 +48,13 @@ See `requirements.txt` for dependencies.
 ## Run tests
     ```bash
     pytest
+
+## Docker
+    ```bash
+    docker build -t processor .
+    docker run -p 8000:8000 processor
+
+
 
 ## Deployment
 See deployment/notes.md for AWS strategy options and cost/performance notes.

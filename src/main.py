@@ -1,8 +1,9 @@
-# src/main.py
-from fastapi import FastAPI, Request, Response, status
+import os
+from fastapi import FastAPI, Request, Response, status, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 import logging
@@ -10,8 +11,23 @@ import uvicorn
 import sys
 import traceback
 import uuid
+import jwt
+from datetime import datetime, timedelta
 
-# --- Logging setup (JSON, rotation-ready, production-hardened) ---
+# === Rate limiting ===
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# === ENVIRONMENT ===
+ENV = os.getenv("ENV", "prod")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://yourdomain.com").split(",")
+JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_MINUTES = 60
+
+# --- Logging setup (unchanged, omitted for brevity — use prior block) ---
+
 class JsonFormatter(logging.Formatter):
     def format(self, record):
         record_dict = record.__dict__.copy()
@@ -34,52 +50,76 @@ for handler in logging.getLogger().handlers:
     handler.setFormatter(JsonFormatter())
 logger = logging.getLogger("api")
 
-# --- FastAPI app ---
+# --- App definition ---
 app = FastAPI(
-    title="Sample FastAPI RESTful API",
-    description="API that processes POSTed JSON, health/version checks, with OpenAPI docs.",
-    version="0.1.0"
+    title="Secure FastAPI RESTful API",
+    description="Hardened API with JWT auth, CORS lockdown, docs hidden in production, and rate limiting.",
+    version="0.1.0",
+    docs_url="/docs" if ENV == "dev" else None,
+    redoc_url="/redoc" if ENV == "dev" else None,
+    openapi_url="/openapi.json" if ENV == "dev" else None
 )
 
-# --- CORS Middleware (production: restrict origins) ---
+# === Rate limiter (SlowAPI) setup ===
+limiter = Limiter(key_func=get_remote_address, default_limits=["20/minute"])
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    request_id = str(uuid.uuid4())
+    logger.warning(f"Rate limit exceeded: {exc} | request_id={request_id}")
+    return JSONResponse(
+        status_code=429,
+        content=ErrorResponse(
+            error="Rate limit exceeded. Please try again later.",
+            code=429,
+            request_id=request_id
+        ).model_dump()
+    )
+
+# --- CORS & Security headers setup (unchanged, see previous block) ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Change to specific domains in prod!
+    allow_origins=ALLOWED_ORIGINS if ENV == "prod" else ["*"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["POST", "GET"],
+    allow_headers=["Authorization", "Content-Type"],
 )
-
-# --- Security Headers Middleware ---
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
-        # response.headers["Content-Security-Policy"] = "default-src 'self';" # Uncomment to enable CSP
         return response
 app.add_middleware(SecurityHeadersMiddleware)
 
-# --- Placeholder Request/Response schemas ---
+# --- JWT Auth code (unchanged, see previous block) ---
+security = HTTPBearer(auto_error=False)
+def create_jwt(user_id: str):
+    expire = datetime.utcnow() + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    payload = {"sub": user_id, "exp": expire}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload["sub"]
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# --- Schemas & Error handlers (unchanged, see previous block) ---
 class RequestSchema(BaseModel):
-    # TODO: Define your actual fields here
     input_data: str
-
 class ResponseSchema(BaseModel):
-    # TODO: Define your actual fields here
     result: str
-
 class ErrorResponse(BaseModel):
     error: str
     code: int
     request_id: str = ""
-
-# --- Global error handlers ---
-
-# Handles FastAPI validation errors (missing fields, bad JSON, etc)
-from fastapi.exceptions import RequestValidationError
-
 @app.exception_handler(RequestValidationError)
 async def fastapi_request_validation_exception_handler(request: Request, exc):
     request_id = str(uuid.uuid4())
@@ -92,7 +132,6 @@ async def fastapi_request_validation_exception_handler(request: Request, exc):
             request_id=request_id
         ).model_dump()
     )
-
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = str(uuid.uuid4())
@@ -107,25 +146,32 @@ async def global_exception_handler(request: Request, exc: Exception):
         ).model_dump()
     )
 
-# --- POST endpoint (/process) ---
-@app.post("/process", response_model=ResponseSchema, responses={422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
-async def process(request: RequestSchema):
-    logger.info(f"Received request: {request.model_dump_json()}")
-    # TODO: Core logic goes here
-    output = f"Echo: {request.input_data}"
+# --- Token endpoint (for demo) ---
+@app.post("/token")
+async def get_token():
+    demo_user_id = "demo-user"
+    token = create_jwt(demo_user_id)
+    return {"access_token": token, "token_type": "bearer"}
+
+# --- Protected POST endpoint (/process) WITH RATE LIMITING ---
+@app.post("/process", response_model=ResponseSchema, responses={422: {"model": ErrorResponse}, 500: {"model": ErrorResponse}, 429: {"model": ErrorResponse}})
+@limiter.limit("5/minute")  # Custom rate limit for this endpoint: 5 reqs per minute per IP
+async def process(request: Request, payload: RequestSchema, user_id: str = Depends(verify_jwt)):
+    logger.info(f"Received request from {user_id}: {payload.model_dump_json()}")
+    output = f"Echo: {payload.input_data}"
     return ResponseSchema(result=output)
 
-# --- GET endpoint (/health) ---
+# --- Health endpoint (unprotected, but rate-limited globally) ---
 @app.get("/health")
-async def health():
-    # Expand with deeper checks as infra grows
+@limiter.limit("30/minute")
+async def health(request: Request):
     return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ok"})
 
-# --- GET endpoint (/version) ---
+# --- Version endpoint (unprotected) ---
 @app.get("/version")
 async def version():
     return JSONResponse(status_code=status.HTTP_200_OK, content={"version": app.version})
 
-# --- Uvicorn entrypoint for local dev/run ---
+# --- Uvicorn entrypoint ---
 if __name__ == "__main__":
-    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=(ENV == "dev"))
